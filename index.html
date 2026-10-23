@@ -2271,7 +2271,7 @@ new MutationObserver(() => { if ($('#storageinfo') && $('#storageinfo').textCont
 /* ===== Google Sheet backup: each saved change is appended as a new row (append-only history) ===== */
 const SHEET = { id: '10Kj-fzxfDhhKKioZ6BkLYfMvf42SyfvaU8mhEpYVpl4', url: 'https://docs.google.com/spreadsheets/d/10Kj-fzxfDhhKKioZ6BkLYfMvf42SyfvaU8mhEpYVpl4/edit', name: 'AG Rotating lines', server: 'Google Sheets',
   /* Paste your Apps Script web app link and secret here so every computer is set up automatically (or enter them on the Data page). */
-  webhook: '', token: '' };
+  webhook: 'https://script.google.com/a/macros/atomgrid.in/s/AKfycbxwMujjFIBVHLTwOLadKkt4zpwkhOgsDHHqSfIHX6Uf_Tzw6oj1QELN_vS9IlC03pMR/exec', token: 'Atomgrid' };
 const SheetHook = {
   url() { try { return localStorage.getItem('atomgrid-sheet-webhook') || SHEET.webhook || ''; } catch (e) { return SHEET.webhook || ''; } },
   token() { try { return localStorage.getItem('atomgrid-sheet-token') || SHEET.token || ''; } catch (e) { return SHEET.token || ''; } },
