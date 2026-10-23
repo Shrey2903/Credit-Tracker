@@ -862,7 +862,7 @@ function render() {
   const v = $('#view');
   const map = { dashboard: viewDashboard, disbursements: viewRegister, principal: viewPrincipal, interest: viewInterest, collections: viewCollections, calendar: viewCalendar, reports: viewReports, settings: viewSettings, data: viewData, audit: viewAudit };
   if (S.line) map.dashboard = viewLineDash;
-  v.innerHTML = (map[S.page] || viewDashboard)();
+  v.innerHTML = (S.mode !== 'demo' && !SharedState.ready ? `<div class="banner banner-amber" data-loadbanner>${SharedState.msg ? esc(SharedState.msg) : 'Loading the latest records from the Google Sheet…'}</div>` : '') + (map[S.page] || viewDashboard)();
   if (S.page === 'data' && S.imp) bindImportPreview();
 }
 
@@ -2024,13 +2024,10 @@ function viewData() {
     <div class="actions"><button class="btn" data-act="tpl-download">Download sample template (.xlsx)</button></div>
     ${can('edit') ? `<div class="formgrid">${fld('File to import', `<input type="file" id="impfile" accept=".xlsx,.xls,.csv">`, { wide: true })}${fld('For CSV or single-sheet files, rows are', `<select id="imptype">${IMP_ORDER.map(k => `<option value="${k}">${IMPORT_DEF[k].sheet}</option>`).join('')}</select>`)}</div><div class="actions"><button class="btn btn-primary" data-act="imp-read">Check file</button></div>` : ''}</section>
   <section class="card"><div class="card-head"><h2>Google Sheet backup</h2></div>
-    <p>${SheetHook.url() ? `With the direct link on, <a href="${SHEET.url}" target="_blank" rel="noopener">${esc(SHEET.name)}</a> is a live copy of the tracker: each facility tab and each combined tab has one row per record showing its current state, checked for changes every 5 seconds. Edits update the existing row instead of adding new ones, deleted records are removed, and the Audit Log tab keeps the full history of every change. Do not type in the mirrored tabs, because the next update replaces them.</p><p class="muted">Without the direct link: ` : ''}Every record you save, edit, reverse or delete in live data is added as a new row in <a href="${SHEET.url}" target="_blank" rel="noopener">${esc(SHEET.name)}</a>, with the time and your name, so the sheet keeps a full history. Each facility has its own tab (Indifi, CapitalXB PID, CapitalXB SID, BlackSoil PID, BlackSoil SID) showing that facility’s disbursements, repayments, interest tranches and receipts together, with the balance after each change; a facility you add later gets its own tab automatically. The combined tabs (Disbursements, Principal Repayments, Interest Payments, Customer Receipts, Audit Log) are kept too. Demo data is never sent.</p>
+    <p><a href="${SHEET.url}" target="_blank" rel="noopener">${esc(SHEET.name)}</a> is the shared backend of this tracker. Every computer that opens this file is connected to it automatically: it loads the latest records when it opens, and changes made on one computer appear on the others within about 10 seconds. Each facility tab and each combined tab holds one row per record showing its current state; the Audit Log tab keeps the full history of every change. Do not type in the mirrored tabs, because the next update replaces them. Demo data is never sent.</p>
     <p data-sheetstatus>${SheetSync.statusHtml()}</p>
-    <div class="actions">${SheetHook.url() ? '<button class="btn btn-primary" data-act="sheet-mirror">Update In Backend</button>' : can('edit') ? '<button class="btn btn-primary" data-act="sheet-sync-all">Send all current records to the sheet</button>' : ''}<button class="btn" data-act="sheet-retry" ${SheetSync.pendingCount() ? '' : 'hidden'}>Retry sending</button><a class="btn" href="${SHEET.url}" target="_blank" rel="noopener">Open the sheet</a></div>
-    <details class="sect" ${SheetHook.url() ? '' : 'open'}><summary>Direct link to Google Sheet (works without Claude)</summary>
-      <p>Paste the web app link from the Apps Script you added to the sheet, and the secret word you set in that script. Each computer or browser that uses the tracker needs this once (or set them once in the file: search for <code>webhook: ''</code>). With the link on, every computer shares the same records: changes made on one appear on the others within about 10 seconds.</p>
-      <div class="formgrid">${fld('Apps Script web app link', `<input id="hookurl" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(SheetHook.url())}">`, { wide: true })}${fld('Secret word', `<input id="hooktoken" type="password" value="${esc(SheetHook.token())}">`)}</div>
-      <div class="actions"><button class="btn btn-primary" data-act="hook-save">Save and test</button>${SheetHook.url() ? '<button class="btn" data-act="hook-clear">Remove link</button>' : ''}</div></details></section>
+    <div class="actions"><button class="btn btn-primary" data-act="sheet-mirror">Update In Backend</button><button class="btn" data-act="sheet-retry" ${SheetSync.pendingCount() ? '' : 'hidden'}>Retry sending</button><a class="btn" href="${SHEET.url}" target="_blank" rel="noopener">Open the sheet</a></div>
+  </section>
   <section class="card"><div class="card-head"><h2>Backup and restore</h2></div>
     <p>A backup is a single JSON file containing every record, the audit log, facility settings and all attachment files. Keep backups somewhere safe; this browser is the only other copy.</p>
     <div class="actions"><button class="btn btn-primary" data-act="backup">Download full backup</button>${can('admin') ? `<label class="btn">Restore from backup<input type="file" id="restorefile" accept=".json,application/json" hidden></label>` : ''}</div>
@@ -2240,15 +2237,6 @@ async function handle(act, id, el) {
       await DriveSync.run(true); const ok = await SheetSync.mirror(true); await SheetSync.send();
       return ok ? toast('Google Sheet updated with all current records') : toast(SheetSync.msg || 'Could not update the sheet.', 'err');
     }
-    case 'hook-save': {
-      const u = $('#hookurl').value.trim(), t = $('#hooktoken').value;
-      if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(u)) return toast('Paste the web app link that ends in /exec.', 'err');
-      try { localStorage.setItem('atomgrid-sheet-webhook', u); localStorage.setItem('atomgrid-sheet-token', t); } catch (x) {}
-      try { const j = await SheetHook.call({ action: 'ping' }); toast('Connected to “' + (j.name || SHEET.name) + '”'); }
-      catch (x) { toast(x.message, 'err'); }
-      await SheetSync.init(); await SharedState.start(); await SheetSync.send(); return render();
-    }
-    case 'hook-clear': try { localStorage.removeItem('atomgrid-sheet-webhook'); localStorage.removeItem('atomgrid-sheet-token'); } catch (x) {} await SheetSync.init(); return render();
     case 'tpl-download': if (!checkXLSX()) return; return saveFile('atomgrid-loan-import-template.xlsx', wbBlob(templateWorkbook()));
     case 'imp-read': { if (!checkXLSX()) return; const f = $('#impfile').files[0]; if (!f) return toast('Choose a file to import.', 'err'); const imp = await readImportFile(f, $('#imptype').value); if (!Object.keys(imp.sheets).length) { toast(imp.sheetErrors[0] || 'No importable rows found. Use the sample template.', 'err'); return; } S.imp = validateImport(imp); render(); return window.scrollTo(0, 0); }
     case 'imp-revalidate': S.imp = validateImport(S.imp); return render();
@@ -2270,11 +2258,11 @@ async function storageInfo() {
 new MutationObserver(() => { if ($('#storageinfo') && $('#storageinfo').textContent === 'Checking storage…') storageInfo(); }).observe(document.getElementById('view'), { childList: true });
 /* ===== Google Sheet backup: each saved change is appended as a new row (append-only history) ===== */
 const SHEET = { id: '10Kj-fzxfDhhKKioZ6BkLYfMvf42SyfvaU8mhEpYVpl4', url: 'https://docs.google.com/spreadsheets/d/10Kj-fzxfDhhKKioZ6BkLYfMvf42SyfvaU8mhEpYVpl4/edit', name: 'AG Rotating lines', server: 'Google Sheets',
-  /* Paste your Apps Script web app link and secret here so every computer is set up automatically (or enter them on the Data page). */
+  /* Apps Script web app link and secret word. Every computer that opens this file uses them automatically. */
   webhook: 'https://script.google.com/a/macros/atomgrid.in/s/AKfycbxwMujjFIBVHLTwOLadKkt4zpwkhOgsDHHqSfIHX6Uf_Tzw6oj1QELN_vS9IlC03pMR/exec', token: 'Atomgrid' };
 const SheetHook = {
-  url() { try { return localStorage.getItem('atomgrid-sheet-webhook') || SHEET.webhook || ''; } catch (e) { return SHEET.webhook || ''; } },
-  token() { try { return localStorage.getItem('atomgrid-sheet-token') || SHEET.token || ''; } catch (e) { return SHEET.token || ''; } },
+  url() { return SHEET.webhook; },
+  token() { return SHEET.token; },
   /* Uses a script-tag request, which Chrome allows even when the tracker is opened as a local file. */
   MAX: 6000,
   enc(payload) { return encodeURIComponent(JSON.stringify(Object.assign({ token: this.token() }, payload))); },
@@ -2416,7 +2404,7 @@ const SharedState = {
         if (!st.rev && !S.data.disbursements.length) await this.loadFromSheet();
         if (!this.rev && !S.data.disbursements.length) await this.oldFacilities();
         await this.push(!this.rev || !st.rev || !this.lastPush);
-        this.ready = true;
+        this.ready = true; this.safeRender();
       } else if (this.dirty) {
         await this.push(false);
       } else {
@@ -2426,7 +2414,10 @@ const SharedState = {
       this.msg = ''; this.lastAt = SheetRows.ts();
     } catch (e) {
       this.msg = (e && e.message ? e.message : 'Could not reach the Apps Script.') + ' Shared data will be tried again in 10 seconds.';
-    } finally { this.busy = false; SheetSync.paint(); }
+    } finally {
+      this.busy = false; SheetSync.paint();
+      const b = document.querySelector('[data-loadbanner]'); if (b && !this.ready && this.msg) b.textContent = this.msg;
+    }
   },
   async push(full) {
     const pushedAt = nowTs(), snap = this.snapshot(full);
@@ -2851,7 +2842,10 @@ const Theme = {
   try {
     await DB.open(S.mode); await loadAll();
     if (S.mode === 'demo' && !S.data.disbursements.length) await seedDemo();
+    try { localStorage.removeItem('atomgrid-sheet-webhook'); localStorage.removeItem('atomgrid-sheet-token'); } catch (x) {}
     render(); runReminders(); SheetSync.init().then(() => SharedState.start()).then(() => SheetSync.send());
+    const refresh = () => { if (document.visibilityState !== 'hidden') SharedState.sync(false); };
+    document.addEventListener('visibilitychange', refresh); window.addEventListener('focus', refresh);
     setInterval(() => { if (D.today() !== S.today) { recalc(); render(); } }, 60000);
   } catch (e) {
     console.error(e);
