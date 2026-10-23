@@ -2259,7 +2259,7 @@ new MutationObserver(() => { if ($('#storageinfo') && $('#storageinfo').textCont
 /* ===== Google Sheet backup: each saved change is appended as a new row (append-only history) ===== */
 const SHEET = { id: '10Kj-fzxfDhhKKioZ6BkLYfMvf42SyfvaU8mhEpYVpl4', url: 'https://docs.google.com/spreadsheets/d/10Kj-fzxfDhhKKioZ6BkLYfMvf42SyfvaU8mhEpYVpl4/edit', name: 'AG Rotating lines', server: 'Google Sheets',
   /* Apps Script web app link and secret word. Every computer that opens this file uses them automatically. */
-  webhook: 'https://script.google.com/a/macros/atomgrid.in/s/AKfycbxwMujjFIBVHLTwOLadKkt4zpwkhOgsDHHqSfIHX6Uf_Tzw6oj1QELN_vS9IlC03pMR/exec', token: 'Atomgrid' };
+  webhook: 'https://script.google.com/macros/s/AKfycbxwMujjFIBVHLTwOLadKkt4zpwkhOgsDHHqSfIHX6Uf_Tzw6oj1QELN_vS9IlC03pMR/exec', token: 'Atomgrid' };
 const SheetHook = {
   url() { return SHEET.webhook; },
   token() { return SHEET.token; },
@@ -2274,7 +2274,7 @@ const SheetHook = {
       const timer = setTimeout(() => fail('hook_network', 'The Apps Script link did not answer in time. Check the internet connection, then click Retry.'), 45000);
       function cleanup() { clearTimeout(timer); try { delete window[cb]; } catch (e) { window[cb] = undefined; } el.remove(); }
       window[cb] = j => { cleanup(); if (j && j.ok) resolve(j); else { const x = new Error((j && j.error) || 'Apps Script error'); x.code = 'hook_error'; reject(x); } };
-      el.onerror = () => fail('hook_network', 'Could not reach the Apps Script link. Make sure you pasted the updated script and deployed a New version.');
+      el.onerror = () => fail('hook_network', 'Could not reach the Google Sheet backend. Check the internet connection. If this keeps happening on every device, the Apps Script deployment must have "Who has access: Anyone".');
       el.src = this.url() + (this.url().includes('?') ? '&' : '?') + 'callback=' + cb + '&p=' + this.enc(payload);
       document.head.appendChild(el);
     });
