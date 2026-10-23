@@ -862,7 +862,7 @@ function render() {
   const v = $('#view');
   const map = { dashboard: viewDashboard, disbursements: viewRegister, principal: viewPrincipal, interest: viewInterest, collections: viewCollections, calendar: viewCalendar, reports: viewReports, settings: viewSettings, data: viewData, audit: viewAudit };
   if (S.line) map.dashboard = viewLineDash;
-  v.innerHTML = (S.mode !== 'demo' && !SharedState.ready ? `<div class="banner banner-amber" data-loadbanner>${SharedState.msg ? esc(SharedState.msg) : 'Loading the latest records from the Google Sheet…'}</div>` : '') + (map[S.page] || viewDashboard)();
+  v.innerHTML = (S.mode !== 'demo' && !!SHEET.webhook && !SharedState.ready && !S.data.disbursements.length ? `<div class="banner banner-amber" data-loadbanner>${SharedState.msg ? esc(SharedState.msg) : 'Loading the latest records from the Google Sheet…'}</div>` : '') + (map[S.page] || viewDashboard)();
   if (S.page === 'data' && S.imp) bindImportPreview();
 }
 
@@ -2324,7 +2324,7 @@ const DriveSync = {
           }
           if (!st.found) throw new Error(`Google Drive did not confirm “${a.name}”.`);
         }
-        this.done[a.id] = { url: st.url, folderUrl: st.folderUrl, fileId: st.fileId }; this.save();
+        this.done[a.id] = { url: st.url, folderUrl: st.folderUrl, fileId: st.fileId }; this.save(); SharedState.needMirror = true;
       }
       this.msg = ''; this.nextTry = 0;
     } catch (e) {
@@ -2375,7 +2375,7 @@ function mergeLoanState(a, b) {
 }
 const SharedState = {
   OLD: '2000-01-01T00:00:00.000Z',
-  ready: false, busy: false, dirty: false, loop: null, msg: '', lastAt: '', needRender: false,
+  ready: false, busy: false, dirty: false, loop: null, msg: '', lastAt: '', needRender: false, needMirror: false,
   get rev() { try { return localStorage.getItem('atomgrid-state-rev') || ''; } catch (e) { return ''; } },
   set rev(v) { try { localStorage.setItem('atomgrid-state-rev', v || ''); } catch (e) {} },
   get lastPush() { try { return localStorage.getItem('atomgrid-state-pushed') || ''; } catch (e) { return ''; } },
@@ -2389,60 +2389,74 @@ const SharedState = {
   },
   start() {
     if (!SheetSync.hook || S.mode === 'demo') return Promise.resolve();
-    if (!this.loop) this.loop = setInterval(() => this.sync(false), 10000);
+    if (!this.loop) this.loop = setInterval(() => this.sync(false), 8000);
     return this.sync(true);
   },
+  /* Opening: the page already shows the records saved in this browser; one quick request brings in what changed. */
   async sync(first) {
     if (!SheetSync.hook || S.mode === 'demo') return;
     if (this.needRender) this.safeRender();
     if (this.busy) return;
     if (!first && !this.ready) first = true;
-    this.busy = true;
+    this.busy = true; SheetSync.paint();
+    let pushAfter = false;
     try {
       if (first) {
-        const st = await SheetHook.call({ action: 'rev' });
-        if (!st.rev && !S.data.disbursements.length) await this.loadFromSheet();
-        if (!this.rev && !S.data.disbursements.length) await this.oldFacilities();
-        await this.push(!this.rev || !st.rev || !this.lastPush);
+        const hasLocal = S.data.disbursements.length > 0;
+        const j = await SheetHook.call({ action: 'getState', since: hasLocal ? this.rev : '' });
+        if (!j.rev) {
+          /* Nobody has shared data yet: load past records from the sheet tabs once, then share them. */
+          if (!hasLocal) await this.loadFromSheet();
+          await this.push(true); this.needMirror = true;
+        } else {
+          if (!j.unchanged && j.state) { if (!this.rev && !hasLocal) await this.oldFacilities(); await this.apply(mergeLoanState(j.state, this.local())); }
+          this.rev = j.rev;
+          pushAfter = this.dirty || (hasLocal && !this.lastPush);
+        }
         this.ready = true; this.safeRender();
       } else if (this.dirty) {
         await this.push(false);
       } else {
-        const st = await SheetHook.call({ action: 'rev' });
-        if (st.rev && st.rev !== this.rev) await this.pull();
+        await this.pull();
       }
       this.msg = ''; this.lastAt = SheetRows.ts();
     } catch (e) {
-      this.msg = (e && e.message ? e.message : 'Could not reach the Apps Script.') + ' Shared data will be tried again in 10 seconds.';
+      this.msg = (e && e.message ? e.message : 'Could not reach the Apps Script.') + ' Trying again in a few seconds.';
     } finally {
       this.busy = false; SheetSync.paint();
       const b = document.querySelector('[data-loadbanner]'); if (b && !this.ready && this.msg) b.textContent = this.msg;
     }
+    if (pushAfter) { this.busy = true; try { await this.push(!this.lastPush); } catch (e) { this.dirty = true; } finally { this.busy = false; SheetSync.paint(); } }
   },
   async push(full) {
     const pushedAt = nowTs(), snap = this.snapshot(full);
     this.dirty = false;
     const n = DATA_STORES.reduce((k, s) => k + snap.stores[s].length, 0);
-    if (n || full) {
-      const pushId = Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36), body = JSON.stringify(snap);
-      let done = false;
-      if (encodeURIComponent(body).length < 5000) { await SheetHook.call({ action: 'putState', pushId, state: body }); done = true; }
-      else {
+    if (!n && !full) return this.pull();
+    const pushId = Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36), body = JSON.stringify(snap);
+    try {
+      if (encodeURIComponent(body).length < 5500) {
+        /* Small change (the usual case): one request sends it and brings back the merged data. */
+        const j = await SheetHook.call({ action: 'putState', pushId, state: body, back: true });
+        this.lastPush = pushedAt;
+        if (j.state) { await this.apply(mergeLoanState(j.state, this.local())); this.rev = j.rev; } else await this.pull();
+      } else {
+        let done = false;
         try { await fetch(SheetHook.url(), { method: 'POST', mode: 'no-cors', credentials: 'include', body: JSON.stringify({ token: SheetHook.token(), action: 'putState', pushId, state: snap }) }); } catch (e) {}
-        for (let i = 0; i < 4 && !done; i++) { await DriveSync.sleep(i ? 2000 : 1000); done = (await SheetHook.call({ action: 'pushStatus', pushId })).done; }
+        for (let i = 0; i < 12 && !done; i++) { done = (await SheetHook.call({ action: 'pushStatus', pushId })).done; if (!done) await DriveSync.sleep(500); }
         if (!done) {
           const size = 1500, total = Math.ceil(body.length / size);
           for (let k = 0; k < total; k++) await SheetHook.call({ action: 'stateChunk', pushId, idx: k, total, data: body.slice(k * size, (k + 1) * size) });
-          done = true;
         }
+        this.lastPush = pushedAt;
+        await this.pull();
       }
-      this.lastPush = pushedAt;
-    }
-    await this.pull();
+    } catch (e) { this.dirty = true; throw e; }
+    if (n) { this.needMirror = true; SheetSync.mirror(false); }
   },
   async pull() {
-    const j = await SheetHook.call({ action: 'getState' });
-    if (j.state) await this.apply(mergeLoanState(j.state, this.local()));
+    const j = await SheetHook.call({ action: 'getState', since: this.rev });
+    if (!j.unchanged && j.state) await this.apply(mergeLoanState(j.state, this.local()));
     this.rev = j.rev || '';
   },
   async apply(merged) {
@@ -2542,7 +2556,7 @@ const SharedState = {
   },
   statusHtml() {
     if (!SheetSync.hook || S.mode === 'demo') return '';
-    return `<br><b>Shared data:</b> ${this.ready ? `in step with other computers${this.lastAt ? ' · checked ' + esc(this.lastAt) : ''}` : 'loading records from the sheet…'}${this.msg ? `<br><span class="t-red">${esc(this.msg)}</span>` : ''}`;
+    return `<br><b>Shared data:</b> ${this.ready ? `in step with other computers${this.lastAt ? ' · checked ' + esc(this.lastAt) : ''}` : 'showing records saved in this browser, refreshing…'}${this.msg ? `<br><span class="t-red">${esc(this.msg)}</span>` : ''}`;
   }
 };
 const SheetSync = {
@@ -2684,9 +2698,10 @@ const SheetSync = {
   ATT_HEAD: ['Uploaded At', 'Uploaded By', 'Attachment ID', 'Facility', 'Disbursement ID', 'Supplier / Customer', 'Invoice / PO', 'Linked To', 'Category', 'Description', 'File Name', 'Size (KB)', 'Open File', 'Disbursement Folder', 'Drive Status'],
   async mirror(force) {
     if (!this.hook || S.mode === 'demo' || this.busy || !SharedState.ready) return;
+    if (!force && !SharedState.needMirror) return;
     if (!force && Date.now() < this.nextTry) return;
     const { out, combined } = this.mirrorRows(), sig = JSON.stringify(out);
-    if (!force && sig === this.lastSig) return;
+    if (!force && sig === this.lastSig) { SharedState.needMirror = false; return; }
     this.busy = true; this.state = 'sending'; this.paint();
     let total = 0;
     try {
@@ -2701,7 +2716,7 @@ const SheetSync = {
         }
         total += rows.length;
       }
-      this.lastSig = sig; this.nextTry = 0; if (!this._retried) SheetHook.MAX = 6000;
+      this.lastSig = sig; this.nextTry = 0; SharedState.needMirror = false; if (!this._retried) SheetHook.MAX = 6000;
       this.state = 'ok'; this.lastAt = SheetRows.ts(); this.lastRows = total; this.msg = '';
       return true;
     } catch (e) {
@@ -2746,7 +2761,7 @@ const SheetSync = {
     return `<b class="${this.state === 'error' ? 't-red' : this.state === 'ok' ? 't-green' : ''}">${esc(head)}</b>${n ? ` · ${n} row${n === 1 ? '' : 's'} waiting` : ''}${this.msg ? `<br><span class="muted">${esc(this.msg)}</span>` : ''}${SharedState.statusHtml()}${DriveSync.statusHtml()}`;
   },
   paint() {
-    const f = $('#sheetfoot'); if (f) f.textContent = this.hook && S.mode !== 'demo' && !SharedState.ready ? 'Sheet backup: loading shared records…' : DriveSync.busy ? 'Uploading attachment to Drive…' : this.state === 'ok' ? 'Sheet backup: synced ' + this.lastAt : this.state === 'error' ? 'Sheet backup: not synced, see Data' : this.state === 'sending' ? 'Sheet backup: sending…' : this.pendingCount() ? `Sheet backup: ${this.pendingCount()} rows waiting` : 'Sheet backup: on';
+    const f = $('#sheetfoot'); if (f) f.textContent = this.hook && S.mode !== 'demo' && (!SharedState.ready || SharedState.busy) ? 'Refreshing latest records…' : DriveSync.busy ? 'Uploading attachment to Drive…' : this.state === 'ok' ? 'Sheet backup: synced ' + this.lastAt : this.state === 'error' ? 'Sheet backup: not synced, see Data' : this.state === 'sending' ? 'Sheet backup: sending…' : this.pendingCount() ? `Sheet backup: ${this.pendingCount()} rows waiting` : 'Sheet backup: on';
     document.querySelectorAll('[data-sheetstatus]').forEach(el => { el.innerHTML = this.statusHtml(); });
     document.querySelectorAll('[data-act="sheet-retry"]').forEach(el => { el.hidden = !this.pendingCount() || this.busy; });
   },
